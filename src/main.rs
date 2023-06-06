@@ -104,7 +104,49 @@ fn parse_mbox_data(icon_data: &[u8], game_title_data: &[u8], title_id_data: &[u8
         title_id,
     }
 }
+#[derive(Debug)]
+struct EventLog {
+    data: Vec<u8>,
+}
 
+#[derive(Debug)]
+struct SaveFile {
+    cec: CEC,
+    eventlog: EventLog,
+}
+
+#[derive(Debug)]
+struct CEC {
+    m_box_list: MBoxList,
+    titles: Vec<Title>,
+}
+
+#[derive(Debug)]
+struct Title {
+    m_box_info: MBoxInfo,
+    m_box_data: MBoxData,
+    inbox: Box,
+    outbox: Box,
+}
+
+#[derive(Debug)]
+struct Box {
+    info: BoxInfo,
+    messages: Vec<MessageFile>,
+    index: Option<OBIndex>,
+}
+
+#[derive(Debug)]
+struct OBIndex {
+    data: Vec<u8>,
+}
+
+fn read_obindex_data(data: Vec<u8>) -> OBIndex {
+    OBIndex { data }
+}
+fn read_eventlog_file(data: Vec<u8>) -> EventLog {
+    EventLog { data }
+}
 fn parse_box_info(data: &[u8]) -> BoxInfo {
     let magic = u16::from_le_bytes([data[0], data[1]]);
     let padding = u16::from_le_bytes([data[2], data[3]]);
@@ -128,125 +170,11 @@ fn parse_box_info(data: &[u8]) -> BoxInfo {
         max_message_size,
     }
 }
-#[derive(Debug)]
-struct SaveFile {
-    cec: CEC,
-}
-
-#[derive(Debug)]
-struct CEC {
-    m_box_list: MBoxList,
-    titles: Vec<Title>,
-}
-
-#[derive(Debug)]
-struct Title {
-    m_box_info: MBoxInfo,
-    m_box_data: MBoxData,
-    inbox: Box,
-    outbox: Box,
-}
-
-#[derive(Debug)]
-struct Box {
-    info: BoxInfo,
-    messages: Vec<MessageFile>,
-}
-fn create_save_file(m_box_list: MBoxList, titles: Vec<Title>) -> SaveFile {
+fn create_save_file(m_box_list: MBoxList, titles: Vec<Title>, eventlog: EventLog) -> SaveFile {
     SaveFile {
         cec: CEC { m_box_list, titles },
+        eventlog: eventlog,
     }
-}
-
-fn main() {
-    let mount_path = Path::new("./mount");
-
-    // Read and parse MBoxList____
-    let mbox_list_path = mount_path.join("CEC/MBoxList____");
-    let mbox_list_data = fs::read(mbox_list_path).expect("Error reading MBoxList____");
-    let m_box_list = parse_mbox_list(&mbox_list_data);
-    let mut titles = Vec::new();
-
-    for box_name in &m_box_list.box_names {
-        let box_path = mount_path.join("CEC").join(box_name);
-
-        let mbox_data_icon_path = box_path.join("MBoxData.001");
-        let mbox_data_game_title_path = box_path.join("MBoxData.010");
-        let mbox_data_title_id_path = box_path.join("MBoxData.050");
-
-        let mbox_data_icon = fs::read(mbox_data_icon_path).expect("Error reading MBoxData.001");
-        let mbox_data_game_title =
-            fs::read(mbox_data_game_title_path).expect("Error reading MBoxData.010");
-        let mbox_data_title_id =
-            fs::read(mbox_data_title_id_path).expect("Error reading MBoxData.050");
-
-        let mbox_data =
-            parse_mbox_data(&mbox_data_icon, &mbox_data_game_title, &mbox_data_title_id);
-
-        let inbox_path = box_path.join("InBox___");
-        let outbox_path = box_path.join("OutBox__");
-        let folders = vec![inbox_path, outbox_path.clone()];
-        let mut inbox_messages = Vec::new();
-        let mut outbox_messages = Vec::new();
-
-        for (i, folder) in folders.iter().enumerate() {
-            if Path::new(folder).exists() {
-                let files: Vec<_> = fs::read_dir(folder)
-                    .expect("Error reading directory")
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.path().is_file())
-                    .filter(|entry| {
-                        entry
-                            .path()
-                            .file_name()
-                            .map_or(false, |fname| fname.to_string_lossy().starts_with('_'))
-                    })
-                    .collect();
-
-                for file in files {
-                    let file_data = fs::read(file.path()).expect("Error reading file");
-                    let message_file = parse_message_file(&file_data);
-                    if i == 0 {
-                        inbox_messages.push(message_file);
-                    } else {
-                        outbox_messages.push(message_file);
-                    }
-                }
-            } else {
-                println!("{:?} folder does not exist.", folder);
-            }
-        }
-        let box_info_path = box_path.join("InBox___").join("BoxInfo_____");
-        let box_info_data = fs::read(box_info_path).expect("Error reading BoxInfo_____");
-
-        let outbox_info_path = outbox_path.join("BoxInfo_____");
-        let outbox_info_data = fs::read(outbox_info_path).expect("Error reading BoxInfo_____");
-
-        let mbox_info_data =
-            fs::read(box_path.join("MBoxInfo____")).expect("Error reading MBoxInfo____");
-
-        let inbox = Box {
-            info: parse_box_info(&box_info_data),
-            messages: inbox_messages,
-        };
-
-        let outbox = Box {
-            info: parse_box_info(&outbox_info_data),
-            messages: outbox_messages,
-        };
-
-        let title = Title {
-            m_box_info: parse_mbox_info(&mbox_info_data),
-            m_box_data: mbox_data,
-            inbox,
-            outbox,
-        };
-
-        titles.push(title);
-    }
-
-    let save_file = create_save_file(m_box_list, titles);
-    // println!("{:?}", save_file);
 }
 
 fn parse_message_file(data: &[u8]) -> MessageFile {
@@ -357,5 +285,108 @@ fn parse_mbox_info(data: &[u8]) -> MBoxInfo {
         flag4,
         timestamp_last_received,
         reserved,
+    }
+}
+fn parse_save(path: &str) -> SaveFile {
+    let mount_path = Path::new("./mount");
+
+    // Read and parse MBoxList____
+    let mbox_list_path = mount_path.join("CEC/MBoxList____");
+    let mbox_list_data = fs::read(mbox_list_path).expect("Error reading MBoxList____");
+    let m_box_list = parse_mbox_list(&mbox_list_data);
+    let mut titles = Vec::new();
+
+    for box_name in &m_box_list.box_names {
+        let box_path = mount_path.join("CEC").join(box_name);
+
+        let mbox_data_icon_path = box_path.join("MBoxData.001");
+        let mbox_data_game_title_path = box_path.join("MBoxData.010");
+        let mbox_data_title_id_path = box_path.join("MBoxData.050");
+
+        let mbox_data_icon = fs::read(mbox_data_icon_path).expect("Error reading MBoxData.001");
+        let mbox_data_game_title =
+            fs::read(mbox_data_game_title_path).expect("Error reading MBoxData.010");
+        let mbox_data_title_id =
+            fs::read(mbox_data_title_id_path).expect("Error reading MBoxData.050");
+
+        let mbox_data =
+            parse_mbox_data(&mbox_data_icon, &mbox_data_game_title, &mbox_data_title_id);
+
+        let inbox_path = box_path.join("InBox___");
+        let outbox_path = box_path.join("OutBox__");
+        let folders = vec![inbox_path, outbox_path.clone()];
+        let mut inbox_messages = Vec::new();
+        let mut outbox_messages = Vec::new();
+
+        for (i, folder) in folders.iter().enumerate() {
+            if Path::new(folder).exists() {
+                let files: Vec<_> = fs::read_dir(folder)
+                    .expect("Error reading directory")
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().is_file())
+                    .filter(|entry| {
+                        entry
+                            .path()
+                            .file_name()
+                            .map_or(false, |fname| fname.to_string_lossy().starts_with('_'))
+                    })
+                    .collect();
+
+                for file in files {
+                    let file_data = fs::read(file.path()).expect("Error reading file");
+                    let message_file = parse_message_file(&file_data);
+                    if i == 0 {
+                        inbox_messages.push(message_file);
+                    } else {
+                        outbox_messages.push(message_file);
+                    }
+                }
+            } else {
+                println!("{:?} folder does not exist.", folder);
+            }
+        }
+        let box_info_path = box_path.join("InBox___").join("BoxInfo_____");
+        let box_info_data = fs::read(box_info_path).expect("Error reading BoxInfo_____");
+
+        let outbox_info_path = outbox_path.join("BoxInfo_____");
+        let outbox_info_data = fs::read(outbox_info_path).expect("Error reading BoxInfo_____");
+
+        let mbox_info_data =
+            fs::read(box_path.join("MBoxInfo____")).expect("Error reading MBoxInfo____");
+
+        let inbox = Box {
+            info: parse_box_info(&box_info_data),
+            messages: inbox_messages,
+            index: None,
+        };
+        let outbox = Box {
+            info: parse_box_info(&outbox_info_data),
+            messages: outbox_messages,
+            index: Some(OBIndex {
+                data: fs::read(outbox_path.join("OBIndex_____"))
+                    .expect("Error reading OBIndex_____"),
+            }),
+        };
+
+        let title = Title {
+            m_box_info: parse_mbox_info(&mbox_info_data),
+            m_box_data: mbox_data,
+            inbox,
+            outbox,
+        };
+
+        titles.push(title);
+    }
+    let eventlog_path = mount_path.join("eventlog.dat");
+    let eventlog_data = fs::read(eventlog_path).expect("Error reading eventlog.dat");
+    let eventlog = read_eventlog_file(eventlog_data);
+    let save_file = create_save_file(m_box_list, titles, eventlog);
+    save_file
+}
+fn main() {
+    let save_file = parse_save("./mount");
+
+    for item in save_file.cec.titles.iter() {
+        println!("{:?}", item.m_box_data.game_title);
     }
 }
